@@ -1,0 +1,3 @@
+@echo off
+echo 관리자 권한으로 스케줄러를 등록합니다...
+PowerShell -ExecutionPolicy Bypass -Command "Start-Process powershell -ArgumentList '-ExecutionPolicy Bypass -File ""%~dp0register_tasks.ps1""' -Verb RunAs -Wait"

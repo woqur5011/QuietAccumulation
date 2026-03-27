@@ -1,0 +1,35 @@
+# API 키 (절대 커밋 금지)
+llm_api_key.txt
+dart_api_key.txt
+*.key
+
+# 수집 데이터 (용량 크고 민감)
+data/
+logs/
+
+# 캐시
+dart_fin_cache.json
+__pycache__/
+*.pyc
+*.pyo
+
+# 에러/수집 로그
+collect_err*.txt
+collect_log*.txt
+
+# 테스트 스크립트
+test_*.py
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# 기타
+*.egg-info/
+dist/
+build/

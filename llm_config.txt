@@ -1,0 +1,21 @@
+# LLM 설정 파일
+# BASE_URL과 MODEL_NAME을 아래에 지정하세요.
+# API 키는 llm_api_key.txt 에 따로 저장합니다.
+
+# ──────────────────────────────────────────────
+# Google AI Studio (Gemini) ← 현재 사용 중
+# ──────────────────────────────────────────────
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_MODEL_NAME=gemma-3-27b-it
+
+# ──────────────────────────────────────────────
+# 알리바바 Qwen (qwen-plus) 사용 시
+# ──────────────────────────────────────────────
+# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# LLM_MODEL_NAME=qwen-plus
+
+# ──────────────────────────────────────────────
+# Anthropic (claude) - OpenAI 호환 프록시 사용 시
+# ──────────────────────────────────────────────
+# LLM_BASE_URL=https://api.anthropic.com/v1
+# LLM_MODEL_NAME=claude-3-5-haiku-20241022
