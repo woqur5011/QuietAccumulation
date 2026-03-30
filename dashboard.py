@@ -20,12 +20,6 @@ try:
 except ImportError:
     _PYKRX_OK = False
 
-try:
-    from pykrx import stock as pykrx_stock
-    _PYKRX_OK = True
-except ImportError:
-    _PYKRX_OK = False
-
 # ─────────────────────────────────────────────
 # 페이지 설정
 # ─────────────────────────────────────────────
@@ -41,22 +35,6 @@ DATA_DIR = Path(__file__).parent / "data"
 
 @st.cache_data(ttl=3600)
 def get_market_map() -> dict:
-    """ticker -> 'KOSPI' or 'KOSDAQ' 매핑 (1시간 캐시)"""
-    if not _PYKRX_OK:
-        return {}
-    try:
-        today = datetime.now().strftime("%Y%m%d")
-        kospi  = pykrx_stock.get_market_ticker_list(today, market="KOSPI")
-        kosdaq = pykrx_stock.get_market_ticker_list(today, market="KOSDAQ")
-        m = {t: "KOSPI" for t in kospi}
-        m.update({t: "KOSDAQ" for t in kosdaq})
-        return m
-    except Exception:
-        return {}
-
-
-@st.cache_data(ttl=3600)
-def get_market_map() -> dict[str, str]:
     """ticker -> 'KOSPI' or 'KOSDAQ' 매핑 (1시간 캐시)"""
     if not _PYKRX_OK:
         return {}
@@ -458,11 +436,6 @@ def main():
         if mmap:
             df_raw["시장"] = df_raw["티커"].astype(str).map(mmap).fillna("")
 
-    # 시장 컬럼 없으면 pykrx로 보완
-    if not df_raw.empty and "시장" not in df_raw.columns:
-        mmap = get_market_map()
-        if mmap:
-            df_raw["시장"] = df_raw["티커"].astype(str).map(mmap).fillna("")
 
     with col_meta:
         if not df_raw.empty and "수집시각" in df_raw.columns:
