@@ -244,8 +244,7 @@ def score_color(val) -> str:
 # 점수 컬럼 툴팁 (마우스오버 설명)
 # ─────────────────────────────────────────────
 SCORE_COL_CONFIG = {
-    "No": st.column_config.NumberColumn("No", width="small", pinned=True),
-    "전체순위": st.column_config.NumberColumn("전체순위", width="small", help="전체 종목 합산점수 기준 순위", pinned=True),
+    "전체순위": st.column_config.NumberColumn("순위", width="small", help="전체 종목 합산점수 기준 순위", pinned=True),
     "종목명": st.column_config.TextColumn("종목명", width="medium", pinned=True),
     "시장": st.column_config.TextColumn("시장", width="small", help="KOSPI / KOSDAQ"),
     "네이버": st.column_config.LinkColumn(
@@ -376,7 +375,6 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
         fdf = fdf.head(top_n)
 
     fdf = fdf.reset_index(drop=True)
-    fdf["No"] = fdf.index + 1
 
     return fdf
 
@@ -468,7 +466,7 @@ def main():
     )
 
     DISPLAY_COLS = [
-        "No", "전체순위", "종목명", "시장",
+        "전체순위", "종목명", "시장",
         "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "합산점수",
         "외인연속매수일", "기관연속매수일",
         "외인매수(억)", "기관매수(억)",
@@ -732,7 +730,6 @@ def main():
                 ascending=asc_all, na_position="last",
             )
         df_all = df_all.reset_index(drop=True)
-        df_all["No"] = df_all.index + 1
 
         styled_all, show_all_cols = make_styled(df_all)
         # st.dataframe 은 가상 스크롤 지원 → 전체 렌더링
@@ -762,7 +759,6 @@ def main():
                 key=lambda s: pd.to_numeric(s, errors="coerce"),
                 ascending=False, na_position="last",
             ).reset_index(drop=True)
-            df_search["No"] = df_search.index + 1
 
             if df_search.empty:
                 st.warning(f"'{query}' 검색 결과 없음")
