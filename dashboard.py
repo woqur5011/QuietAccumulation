@@ -14,6 +14,18 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+try:
+    from pykrx import stock as pykrx_stock
+    _PYKRX_OK = True
+except ImportError:
+    _PYKRX_OK = False
+
+try:
+    from pykrx import stock as pykrx_stock
+    _PYKRX_OK = True
+except ImportError:
+    _PYKRX_OK = False
+
 # ─────────────────────────────────────────────
 # 페이지 설정
 # ─────────────────────────────────────────────
@@ -25,6 +37,38 @@ st.set_page_config(
 )
 
 DATA_DIR = Path(__file__).parent / "data"
+
+
+@st.cache_data(ttl=3600)
+def get_market_map() -> dict:
+    """ticker -> 'KOSPI' or 'KOSDAQ' 매핑 (1시간 캐시)"""
+    if not _PYKRX_OK:
+        return {}
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        kospi  = pykrx_stock.get_market_ticker_list(today, market="KOSPI")
+        kosdaq = pykrx_stock.get_market_ticker_list(today, market="KOSDAQ")
+        m = {t: "KOSPI" for t in kospi}
+        m.update({t: "KOSDAQ" for t in kosdaq})
+        return m
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def get_market_map() -> dict[str, str]:
+    """ticker -> 'KOSPI' or 'KOSDAQ' 매핑 (1시간 캐시)"""
+    if not _PYKRX_OK:
+        return {}
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        kospi  = pykrx_stock.get_market_ticker_list(today, market="KOSPI")
+        kosdaq = pykrx_stock.get_market_ticker_list(today, market="KOSDAQ")
+        m = {t: "KOSPI" for t in kospi}
+        m.update({t: "KOSDAQ" for t in kosdaq})
+        return m
+    except Exception:
+        return {}
 
 
 def get_available_dates() -> list[str]:
@@ -225,6 +269,7 @@ SCORE_COL_CONFIG = {
     "No": st.column_config.NumberColumn("No", width="small", pinned=True),
     "전체순위": st.column_config.NumberColumn("전체순위", width="small", help="전체 종목 합산점수 기준 순위", pinned=True),
     "종목명": st.column_config.TextColumn("종목명", width="medium", pinned=True),
+    "시장": st.column_config.TextColumn("시장", width="small", help="KOSPI / KOSDAQ"),
     "네이버": st.column_config.LinkColumn(
         "네이버",
         display_text="📈",
@@ -407,6 +452,18 @@ def main():
 
     df_raw = load_data(csv_path) if csv_path else pd.DataFrame()
 
+    # 시장 컨럼 없으면 pykrx로 자동 보완
+    if not df_raw.empty and "시장" not in df_raw.columns:
+        mmap = get_market_map()
+        if mmap:
+            df_raw["시장"] = df_raw["티커"].astype(str).map(mmap).fillna("")
+
+    # 시장 컬럼 없으면 pykrx로 보완
+    if not df_raw.empty and "시장" not in df_raw.columns:
+        mmap = get_market_map()
+        if mmap:
+            df_raw["시장"] = df_raw["티커"].astype(str).map(mmap).fillna("")
+
     with col_meta:
         if not df_raw.empty and "수집시각" in df_raw.columns:
             last_update = df_raw["수집시각"].max()
@@ -438,7 +495,7 @@ def main():
     )
 
     DISPLAY_COLS = [
-        "No", "전체순위", "종목명",
+        "No", "전체순위", "종목명", "시장",
         "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "합산점수",
         "외인연속매수일", "기관연속매수일",
         "외인매수(억)", "기관매수(억)",
@@ -521,6 +578,7 @@ def main():
                     ("padding", "6px 10px"), ("border-bottom", "1px solid #1f2937"),
                 ]},
             ])
+            .hide(axis="index")
         ), show_cols
 
     # ══════════════════════════════════════════

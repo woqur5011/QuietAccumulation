@@ -771,12 +771,16 @@ def _get_naver_market_tickers(sosok: int) -> list[dict]:
 
 
 def get_all_tickers() -> list[dict]:
-    """코스피 + 코스닥 전 종목 반환"""
+    """코스피 + 코스닥 전 종목 반환 (시장 구분 포함)"""
     log.info("코스피 종목 목록 수집...")
     kospi  = _get_naver_market_tickers(0)
-    log.info(f"  → {len(kospi)}개")
+    for item in kospi:
+        item["market"] = "KOSPI"
+    log.info(f"  \u2192 {len(kospi)}개")
     log.info("코스닥 종목 목록 수집...")
     kosdaq = _get_naver_market_tickers(1)
+    for item in kosdaq:
+        item["market"] = "KOSDAQ"
     log.info(f"  → {len(kosdaq)}개")
     return kospi + kosdaq
 
@@ -786,7 +790,15 @@ def get_all_tickers() -> list[dict]:
 def load_watchlist() -> list[dict]:
     if WATCHLIST_JSON.exists():
         with open(WATCHLIST_JSON, encoding="utf-8") as f:
-            return json.load(f)
+            items = json.load(f)
+        # market 필드 없으면 전체 목록으로 판별 (1회만 조회)
+        if items and "market" not in items[0]:
+            log.info("watchlist market 필드 없음 → 시장 구분 자동 판별...")
+            all_tickers = get_all_tickers()
+            market_map = {it["ticker"]: it.get("market", "") for it in all_tickers}
+            for item in items:
+                item["market"] = market_map.get(item["ticker"], "")
+        return items
     log.warning("watchlist.json 없음 — 코스피 상위 50 자동 수집 시도")
     return []
 
@@ -795,7 +807,7 @@ def load_watchlist() -> list[dict]:
 # 전체 스냅샷 수집
 # ─────────────────────────────────────────────
 COL_ORDER = [
-    "No", "종목명", "티커",
+    "No", "종목명", "티커", "시장",
     "외인연속매수일", "기관연속매수일",
     "외인매수(억)", "기관매수(억)",
     "중간매도기간(외)", "중간매도기간(기)",
@@ -822,11 +834,12 @@ def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
     for i, item in enumerate(watchlist, 1):
         ticker = item["ticker"]
         name   = item.get("name", ticker)
+        market = item.get("market", "")
         log.info(f"[{i}/{len(watchlist)}] {name} ({ticker})")
 
         # 티커↔종목명 검증 (full 모드 또는 watchlist 모드 공통)
         if not verify_ticker_name(ticker, name):
-            log.warning(f"[{ticker}] '{name}' 종목명 불일치 → 스킵")
+            log.warning(f"[{ticker}] '{name}' 종목명 불일치 \u2192 스킵")
             continue
 
         try:
@@ -838,6 +851,8 @@ def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
                 "수집시각": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         row["No"] = i
+        if market:
+            row["시장"] = market
         rows.append(row)
 
         # 중간 저장 (중단 시 복구용)
