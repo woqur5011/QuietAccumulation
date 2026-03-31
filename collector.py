@@ -863,13 +863,19 @@ def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df = df[[c for c in COL_ORDER if c in df.columns]]
 
-    _save_df(df, target_csv)
-    _save_df(df, latest_csv_path())
+    if mode == "full":
+        # 풀스캔: YYYYMMDD.csv + latest.csv 둘 다 저장
+        _save_df(df, target_csv)
+        _save_df(df, latest_csv_path())
+        log.info(f"저장 완료 → {target_csv}  ({len(df)}개 종목)")
+    else:
+        # 워치리스트: latest.csv 만 저장 (YYYYMMDD.csv 풀스캔 덮어쓰기 방지)
+        _save_df(df, latest_csv_path())
+        log.info(f"저장 완료 → latest.csv  ({len(df)}개 종목, YYYYMMDD.csv 유지)")
 
     # DART 재무 캐시 최종 flush
     _save_dart_fin_cache()
     log.info(get_dart_fin_cache_stats())
-    log.info(f"저장 완료 → {target_csv}  ({len(df)}개 종목)")
     return df
 
 
