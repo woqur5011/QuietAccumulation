@@ -117,29 +117,56 @@ def load_top20(date_str: str, tickers: list | None = None) -> pd.DataFrame:
 # LLM 요약 생성
 # ─────────────────────────────────────────────
 
-PROMPT_TEMPLATE = """너는 글로벌 투자은행의 수석 애널리스트야. **{name}**에 대해 일반인이 이해하기 쉽게, 하지만 핵심은 놓치지 않고 딱 **3줄(문장)**로만 요약해줘.
+PROMPT_TEMPLATE = """너는 보수적인 가치투자 애널리스트야. **{name}** (티커: {ticker})에 대해 아래 수급 데이터를 참고하여 4줄로 요약해줘.
 
-[비즈니스 모델] 이 회사가 정확히 어디서 돈을 벌고 있으며, 업계 내 점유율이나 경쟁력이 어느 정도인지 요약할 것.
+[수급 데이터]
+- 외인 연속매수: {f_days}일 / 기관 연속매수: {i_days}일
+- 외인 누적순매수: {f_bil}억원 / 기관 누적순매수: {i_bil}억원
+- 합산점수: {score}점 (전체 종목 백분위 기준, 최대 100점)
+- 재무등급: {grade} / PBR: {pbr} / 부채비율: {debt}%
 
-[최근 모멘텀] 최근 6개월 내 발표된 공시, 실적, 신기술 등 주가에 가장 큰 영향을 준 결정적 이벤트를 요약할 것.
+[비즈니스 모델] 이 회사가 어디서 돈을 벌고 업계 내 경쟁력이 어느 수준인지 한 줄.
 
-[시장 컨센서스] 현재 전문가들이 보는 적정 가치 대비 저평가/고평가 여부와 향후 가장 큰 변수(리스크 포함)를 요약할 것.
+[최근 모멘텀] 최근 6개월 내 주가에 영향을 준 결정적 이벤트(공시/실적/신기술) 한 줄.
 
-※ 주의사항: 불필요한 수식어는 빼고 데이터와 사실 위주로 문장당 한 줄씩 총 3줄로 작성할 것.
+[추천 이유] 위 수급 데이터를 근거로, 지금 이 종목에 주목해야 하는 구체적인 이유 한 줄.
 
-반드시 다음 형식으로 답해줘 (항목 이름 포함):
+[리스크] 이 종목에서 가장 주의해야 할 리스크 한 줄.
+
+※ 불필요한 수식어 없이 사실 위주로, 항목당 한 줄씩 총 4줄.
+
+반드시 다음 형식으로:
 [비즈니스 모델]: ...
 [최근 모멘텀]: ...
-[시장 컨센서스]: ..."""
+[추천 이유]: ...
+[리스크]: ..."""
 
 
-def summarize_stock(client, model: str, name: str, ticker: str) -> dict:
-    """단일 종목 LLM 요약. {'기업 개요': ..., '최근 동향': ..., '투자 포인트/리스크': ...}"""
-    prompt = PROMPT_TEMPLATE.format(name=name)
+def summarize_stock(client, model: str, name: str, ticker: str, row: dict | None = None) -> dict:
+    """단일 종목 LLM 요약. 수급 데이터(row)를 프롬프트에 주입해 추천이유/리스크 설명 포함."""
+    row = row or {}
+
+    def _fmt(val, default="-", fmt="{}"):
+        v = pd.to_numeric(val, errors="coerce") if not isinstance(val, (int, float)) else val
+        return fmt.format(v) if not pd.isna(v) else default
+
+    prompt = PROMPT_TEMPLATE.format(
+        name=name,
+        ticker=ticker,
+        f_days=_fmt(row.get("외인연속매수일"), fmt="{:.0f}"),
+        i_days=_fmt(row.get("기관연속매수일"), fmt="{:.0f}"),
+        f_bil=_fmt(row.get("외인매수(억)"), fmt="{:+.1f}"),
+        i_bil=_fmt(row.get("기관매수(억)"), fmt="{:+.1f}"),
+        score=_fmt(row.get("합산점수"), fmt="{:.1f}"),
+        grade=str(row.get("재무등급") or "-"),
+        pbr=_fmt(row.get("라이브PBR"), fmt="{:.2f}"),
+        debt=_fmt(row.get("부채비율"), fmt="{:.0f}"),
+    )
     today_str = datetime.now().strftime("%Y년 %m월 %d일")
     system_msg = (
         f"오늘 날짜는 {today_str}입니다. "
-        "최신 정보 기준으로 답변하고, 오래된 정보(2년 이상 된 뉴스 등)는 언급하지 마세요."
+        "최신 정보 기준으로 답변하고, 2년 이상 된 정보는 언급하지 마세요. "
+        "추천 근거는 반드시 제공된 수급 데이터와 연결하여 구체적으로 작성하세요."
     )
 
     for attempt in range(3):
@@ -150,7 +177,7 @@ def summarize_stock(client, model: str, name: str, ticker: str) -> dict:
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=400,
+                max_tokens=500,
                 temperature=0.3,
             )
             raw = response.choices[0].message.content.strip()
@@ -166,11 +193,10 @@ def summarize_stock(client, model: str, name: str, ticker: str) -> dict:
     else:
         return {"error": "최대 재시도 초과", "raw": ""}
 
-    # 파싱: "[비즈니스 모델]: ...\n[최근 모멘텀]: ...\n[시장 컨센서스]: ..."
     result = {"raw": raw}
     for line in raw.splitlines():
         line = line.strip()
-        for key in ["비즈니스 모델", "최근 모멘텀", "시장 컨센서스"]:
+        for key in ["비즈니스 모델", "최근 모멘텀", "추천 이유", "리스크"]:
             prefix1 = f"[{key}]:"
             prefix2 = f"{key}:"
             if line.startswith(prefix1):
@@ -207,20 +233,25 @@ def screen_stocks(df: pd.DataFrame) -> tuple:
         if not pd.isna(op_margin) and op_margin < 0:
             reasons.append(f"영업적자 ({op_margin:.1f}%)")
 
-        # 3) 부채비율 과다
+        # 3) 부채비율 과다 (보수적 기준 200%)
         debt = pd.to_numeric(row.get("부채비율"), errors="coerce")
-        if not pd.isna(debt) and debt > 300:
+        if not pd.isna(debt) and debt > 200:
             reasons.append(f"부채비율 과다 ({debt:.0f}%)")
 
-        # 4) 수급 지속성 부족 (외인·기관 모두 2일 미만)
+        # 4) PBR 고평가 (5배 초과)
+        pbr = pd.to_numeric(row.get("라이브PBR"), errors="coerce")
+        if not pd.isna(pbr) and pbr > 5:
+            reasons.append(f"PBR 고평가 ({pbr:.1f}배)")
+
+        # 5) 수급 지속성 부족 (외인·기관 둘 다 3일 미만)
         f_days = pd.to_numeric(row.get("외인연속매수일", 0), errors="coerce")
         i_days = pd.to_numeric(row.get("기관연속매수일", 0), errors="coerce")
-        f_ok = (not pd.isna(f_days)) and f_days >= 2
-        i_ok = (not pd.isna(i_days)) and i_days >= 2
+        f_ok = (not pd.isna(f_days)) and f_days >= 3
+        i_ok = (not pd.isna(i_days)) and i_days >= 3
         if not f_ok and not i_ok:
             fv = f"{f_days:.0f}" if not pd.isna(f_days) else "?"
             iv = f"{i_days:.0f}" if not pd.isna(i_days) else "?"
-            reasons.append(f"수급 지속성 부족 (외인 {fv}일, 기관 {iv}일)")
+            reasons.append(f"수급 지속성 부족 (외인 {fv}일, 기관 {iv}일 — 최소 한 쪽 3일 이상 필요)")
 
         if reasons:
             skip_reasons[name] = reasons
@@ -285,7 +316,7 @@ def generate_summary(date_str: str | None = None, force: bool = False,
             continue
 
         print(f"  [{i+1:02d}/{len(rec_df):02d}] {name} ({ticker}) ... ", end="", flush=True)
-        summary = summarize_stock(client, model, name, ticker)
+        summary = summarize_stock(client, model, name, ticker, row=row.to_dict())
         summaries[name] = {"ticker": ticker, **summary}
 
         if "error" in summary:

@@ -662,7 +662,8 @@ def main():
                         naver_url = f"https://finance.naver.com/item/main.nhn?code={ticker}"
                         biz       = info.get("비즈니스 모델", "")
                         momentum  = info.get("최근 모멘텀", "")
-                        consensus = info.get("시장 컨센서스", "")
+                        reason    = info.get("추천 이유", "")
+                        risk      = info.get("리스크", "")
                         error     = info.get("error", "")
 
                         with cols[col_idx]:
@@ -678,7 +679,8 @@ def main():
                                     st.markdown(
                                         f"💼 {biz}\n\n"
                                         f"📈 {momentum}\n\n"
-                                        f"🎯 {consensus}"
+                                        f"✅ {reason}\n\n"
+                                        f"⚠️ {risk}"
                                     )
             else:
                 st.info("추천 종목이 없습니다.")
