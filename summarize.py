@@ -136,12 +136,20 @@ PROMPT_TEMPLATE = """너는 글로벌 투자은행의 수석 애널리스트야.
 def summarize_stock(client, model: str, name: str, ticker: str) -> dict:
     """단일 종목 LLM 요약. {'기업 개요': ..., '최근 동향': ..., '투자 포인트/리스크': ...}"""
     prompt = PROMPT_TEMPLATE.format(name=name)
+    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    system_msg = (
+        f"오늘 날짜는 {today_str}입니다. "
+        "최신 정보 기준으로 답변하고, 오래된 정보(2년 이상 된 뉴스 등)는 언급하지 마세요."
+    )
 
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
+                ],
                 max_tokens=400,
                 temperature=0.3,
             )
