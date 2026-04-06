@@ -63,7 +63,17 @@ def _load_llm_config() -> tuple[str, str, str]:
             elif k == "LLM_MODEL_NAME":
                 model = v
 
-    # 3) 환경변수 fallback
+    # 3) Streamlit Secrets (Streamlit Cloud 배포 환경)
+    if not api_key:
+        try:
+            import streamlit as _st
+            api_key  = api_key  or _st.secrets.get("LLM_API_KEY",   "")
+            base_url = base_url or _st.secrets.get("LLM_BASE_URL",  "")
+            model    = model    or _st.secrets.get("LLM_MODEL_NAME", "")
+        except Exception:
+            pass
+
+    # 4) 환경변수 fallback
     api_key  = api_key  or os.environ.get("LLM_API_KEY",   "")
     base_url = base_url or os.environ.get("LLM_BASE_URL",  "https://api.openai.com/v1")
     model    = model    or os.environ.get("LLM_MODEL_NAME", "gpt-4o-mini")
