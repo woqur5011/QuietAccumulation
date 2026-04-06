@@ -80,12 +80,17 @@ def _get_latest_date() -> str | None:
         [f.stem for f in DATA_DIR.glob("????????.csv") if f.stem.isdigit()],
         reverse=True,
     )
-    return files[0] if files else None
+    if files:
+        return files[0]
+    # Streamlit Cloud 등 latest.csv만 있는 환경 fallback
+    if (DATA_DIR / "latest.csv").exists():
+        return "latest"
+    return None
 
 
 def load_top20(date_str: str, tickers: list | None = None) -> pd.DataFrame:
     """해당 날짜 CSV를 읽어 합산점수 상위 20개 반환. tickers 지정 시 해당 종목만 반환."""
-    csv_path = DATA_DIR / f"{date_str}.csv"
+    csv_path = DATA_DIR / ("latest.csv" if date_str == "latest" else f"{date_str}.csv")
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV 없음: {csv_path}")
 
@@ -279,7 +284,7 @@ def generate_summary(date_str: str | None = None, force: bool = False,
         if date_str is None:
             raise RuntimeError("data/ 디렉터리에 CSV 파일이 없습니다.")
 
-    out_path = DATA_DIR / f"{date_str}_summary.json"
+    out_path = DATA_DIR / ("latest_summary.json" if date_str == "latest" else f"{date_str}_summary.json")
     if out_path.exists() and not force:
         print(f"[INFO] 이미 요약 파일 존재: {out_path}  (재생성하려면 --force)")
         return out_path

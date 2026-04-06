@@ -68,8 +68,11 @@ def get_latest_csv() -> Path | None:
 
 
 def load_summary(date_str: str) -> dict | None:
-    """data/YYYYMMDD_summary.json 로드. 없으면 None."""
-    path = DATA_DIR / f"{date_str}_summary.json"
+    """data/YYYYMMDD_summary.json 로드. date_str 없으면 latest_summary.json fallback."""
+    if date_str:
+        path = DATA_DIR / f"{date_str}_summary.json"
+    else:
+        path = DATA_DIR / "latest_summary.json"
     if not path.exists():
         return None
     try:

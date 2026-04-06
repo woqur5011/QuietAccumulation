@@ -887,8 +887,19 @@ def _save_df(df: pd.DataFrame, path: Path):
 # ─────────────────────────────────────────────
 # 직접 실행
 # ─────────────────────────────────────────────
+def _auto_summarize():
+    """--full 수집 완료 후 AI 요약 자동 생성."""
+    try:
+        from summarize import generate_summary
+        log.info("AI 요약 자동 생성 시작...")
+        generate_summary(date_str=None, force=True)
+        log.info("AI 요약 완료")
+    except Exception as e:
+        log.warning(f"AI 요약 스킵 (LLM 미설정 또는 오류): {e}")
+
+
 def _git_push_latest():
-    """--full 수집 완료 후 latest.csv를 GitHub에 자동 push."""
+    """--full 수집 완료 후 latest.csv + latest_summary.json을 GitHub에 자동 push."""
     import subprocess as _sp
     from datetime import datetime as _dt
 
@@ -899,15 +910,19 @@ def _git_push_latest():
         return
 
     ts = _dt.now().strftime("%Y-%m-%d %H:%M")
+    files_to_add = [str(target)]
+    summary = repo / "data" / "latest_summary.json"
+    if summary.exists():
+        files_to_add.append(str(summary))
+
     cmds = [
-        ["git", "add", str(target)],
+        ["git", "add"] + files_to_add,
         ["git", "commit", "-m", f"data: update latest.csv {ts}"],
         ["git", "push"],
     ]
     for cmd in cmds:
         r = _sp.run(cmd, capture_output=True, text=True, cwd=str(repo))
         if r.returncode != 0:
-            # commit 실패는 "nothing to commit" 일 수 있으므로 push는 계속
             log.warning(f"git {cmd[1]} 경고: {r.stderr.strip() or r.stdout.strip()}")
             if cmd[1] == "push":
                 return
@@ -920,4 +935,5 @@ if __name__ == "__main__":
     mode = "full" if "--full" in sys.argv else "watchlist"
     collect_snapshot(mode=mode)
     if mode == "full":
+        _auto_summarize()
         _git_push_latest()
