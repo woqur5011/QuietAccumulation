@@ -887,7 +887,37 @@ def _save_df(df: pd.DataFrame, path: Path):
 # ─────────────────────────────────────────────
 # 직접 실행
 # ─────────────────────────────────────────────
+def _git_push_latest():
+    """--full 수집 완료 후 latest.csv를 GitHub에 자동 push."""
+    import subprocess as _sp
+    from datetime import datetime as _dt
+
+    repo = Path(__file__).parent
+    target = repo / "data" / "latest.csv"
+    if not target.exists():
+        log.warning("git push 스킵: data/latest.csv 없음")
+        return
+
+    ts = _dt.now().strftime("%Y-%m-%d %H:%M")
+    cmds = [
+        ["git", "add", str(target)],
+        ["git", "commit", "-m", f"data: update latest.csv {ts}"],
+        ["git", "push"],
+    ]
+    for cmd in cmds:
+        r = _sp.run(cmd, capture_output=True, text=True, cwd=str(repo))
+        if r.returncode != 0:
+            # commit 실패는 "nothing to commit" 일 수 있으므로 push는 계속
+            log.warning(f"git {cmd[1]} 경고: {r.stderr.strip() or r.stdout.strip()}")
+            if cmd[1] == "push":
+                return
+        else:
+            log.info(f"git {cmd[1]} 완료")
+
+
 if __name__ == "__main__":
     import sys
     mode = "full" if "--full" in sys.argv else "watchlist"
     collect_snapshot(mode=mode)
+    if mode == "full":
+        _git_push_latest()

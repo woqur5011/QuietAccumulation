@@ -1,0 +1,10 @@
+[server]
+headless = true
+port = 8505
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = false

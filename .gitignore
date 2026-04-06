@@ -3,8 +3,9 @@ llm_api_key.txt
 dart_api_key.txt
 *.key
 
-# 수집 데이터 (용량 크고 민감)
-data/
+# 수집 데이터 — latest.csv만 GitHub에 유지 (full 스캔 결과)
+data/*
+!data/latest.csv
 logs/
 
 # 캐시
