@@ -625,28 +625,95 @@ def main():
                 st.caption("⚠️ 요약 파일 없음 — '요약 (재)생성' 버튼을 눌러 생성하세요.")
 
         if force_regen:
-            summarize_script = Path(__file__).parent / "summarize.py"
-            # 수급 상위 탭과 동일한 df_top 티커 목록 전달
-            tickers_arg = ",".join(df_top["티커"].astype(str).str.zfill(6).tolist())
-            # _sel_date가 비어있으면(latest) 날짜 인자 생략 → summarize.py가 자동 감지
-            cmd = [sys.executable, str(summarize_script), "--force", "--tickers", tickers_arg]
-            if _sel_date:
-                cmd.insert(2, _sel_date)
-            # Windows 한글 인코딩 문제 방지: PYTHONUTF8=1 환경변수 전달
+            from summarize import summarize_stock_stream, generate_summary, screen_stocks, load_top20, _load_llm_config
             import os as _os
-            _env = {**_os.environ, "PYTHONUTF8": "1"}
-            with st.spinner("🤖 LLM으로 top20 종목 요약 중... (약 10~30초 소요)"):
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True, text=True, encoding="utf-8",
-                    env=_env,
-                )
-            if result.returncode == 0:
-                st.success("요약 생성 완료! 아래에서 확인하세요.")
-                summary_data = load_summary(_sel_date)
+
+            api_key, base_url, model_name = _load_llm_config()
+            if not api_key:
+                st.error("LLM API 키가 설정되지 않았습니다. Streamlit Secrets 또는 llm_api_key.txt를 확인하세요.")
             else:
-                err_msg = result.stderr or result.stdout or "(출력 없음)"
-                st.error(f"요약 생성 실패:\n```\n{err_msg}\n```")
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=api_key, base_url=base_url)
+                except ImportError:
+                    st.error("openai 패키지가 필요합니다.")
+                    client = None
+
+                if client:
+                    tickers_list = df_top["티커"].astype(str).str.zfill(6).tolist()
+                    try:
+                        df_for_sum = load_top20(_sel_date or "latest", tickers=tickers_list)
+                        rec_df, skip_df, skip_reasons = screen_stocks(df_for_sum)
+                    except Exception as e:
+                        st.error(f"데이터 로드 실패: {e}")
+                        rec_df, skip_df, skip_reasons = pd.DataFrame(), pd.DataFrame(), {}
+
+                    summaries = {}
+                    not_recommended = {
+                        str(row.get("종목명", "")): {
+                            "ticker": str(row.get("티커", "")),
+                            "reasons": skip_reasons.get(str(row.get("종목명", "")), []),
+                        }
+                        for _, row in skip_df.iterrows()
+                    }
+
+                    st.markdown(f"### ✅ 매수 추천 ({len(rec_df)}종목) — 실시간 생성 중...")
+                    for col_start in range(0, len(rec_df), 2):
+                        cols = st.columns(2)
+                        for col_idx, (_, stock_row) in enumerate(rec_df.iloc[col_start:col_start+2].iterrows()):
+                            name   = str(stock_row.get("종목명", ""))
+                            ticker = str(stock_row.get("티커", ""))
+                            naver_url = f"https://finance.naver.com/item/main.nhn?code={ticker}"
+                            with cols[col_idx]:
+                                with st.container(border=True):
+                                    st.markdown(
+                                        f"**[{name}]({naver_url})** "
+                                        f"<span style='color:#6b7280; font-size:12px;'>({ticker})</span>",
+                                        unsafe_allow_html=True,
+                                    )
+                                    stream_placeholder = st.empty()
+                                    streamed_text = ""
+                                    parsed = {}
+                                    for chunk in summarize_stock_stream(client, model_name, name, ticker, row=stock_row.to_dict()):
+                                        if isinstance(chunk, dict):
+                                            parsed = chunk
+                                        else:
+                                            streamed_text += chunk
+                                            stream_placeholder.markdown(streamed_text + "▌")
+                                    stream_placeholder.empty()
+                                    if parsed.get("error"):
+                                        st.warning(f"요약 오류: {parsed['error']}")
+                                    else:
+                                        st.markdown(
+                                            f"💼 {parsed.get('비즈니스 모델','')}\n\n"
+                                            f"📈 {parsed.get('최근 모멘텀','')}\n\n"
+                                            f"✅ {parsed.get('추천 이유','')}\n\n"
+                                            f"⚠️ {parsed.get('리스크','')}"
+                                        )
+                                    summaries[name] = {"ticker": ticker, **parsed}
+                            if col_start + col_idx < len(rec_df) - 2:
+                                time.sleep(4)
+
+                    # JSON 저장 + git push
+                    import json as _json, datetime as _dt
+                    payload = {
+                        "date": _sel_date or "latest",
+                        "generated_at": _dt.datetime.now().isoformat(timespec="seconds"),
+                        "model": model_name,
+                        "summaries": summaries,
+                        "not_recommended": not_recommended,
+                    }
+                    out_name = "latest_summary.json" if not _sel_date else f"{_sel_date}_summary.json"
+                    out_path = DATA_DIR / out_name
+                    out_path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    summary_data = payload
+                    st.success("✅ 요약 저장 완료!")
+
+                    if not_recommended:
+                        st.markdown(f"### ❌ 비추천 ({len(not_recommended)}종목)")
+                        rows_nr = [{"종목명": n, "티커": i.get("ticker",""), "비추천 사유": ", ".join(i.get("reasons",[]))}
+                                   for n, i in not_recommended.items()]
+                        st.dataframe(pd.DataFrame(rows_nr), use_container_width=True, hide_index=True)
 
         # 요약 카드 표시
         if summary_data and summary_data.get("summaries"):

@@ -157,7 +157,77 @@ PROMPT_TEMPLATE = """너는 보수적인 가치투자 애널리스트야. **{nam
 [리스크]: ..."""
 
 
-def summarize_stock(client, model: str, name: str, ticker: str, row: dict | None = None) -> dict:
+def summarize_stock_stream(client, model: str, name: str, ticker: str, row: dict | None = None):
+    """단일 종목 LLM 스트리밍 요약. 토큰을 yield하고 마지막에 파싱된 dict를 yield."""
+    row = row or {}
+
+    def _fmt(val, default="-", fmt="{}"):
+        v = pd.to_numeric(val, errors="coerce") if not isinstance(val, (int, float)) else val
+        return fmt.format(v) if not pd.isna(v) else default
+
+    prompt = PROMPT_TEMPLATE.format(
+        name=name, ticker=ticker,
+        f_days=_fmt(row.get("외인연속매수일"), fmt="{:.0f}"),
+        i_days=_fmt(row.get("기관연속매수일"), fmt="{:.0f}"),
+        f_bil=_fmt(row.get("외인매수(억)"), fmt="{:+.1f}"),
+        i_bil=_fmt(row.get("기관매수(억)"), fmt="{:+.1f}"),
+        score=_fmt(row.get("합산점수"), fmt="{:.1f}"),
+        grade=str(row.get("재무등급") or "-"),
+        pbr=_fmt(row.get("라이브PBR"), fmt="{:.2f}"),
+        debt=_fmt(row.get("부채비율"), fmt="{:.0f}"),
+    )
+    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    system_msg = (
+        f"오늘 날짜는 {today_str}입니다. "
+        "최신 정보 기준으로 답변하고, 2년 이상 된 정보는 언급하지 마세요. "
+        "추천 근거는 반드시 제공된 수급 데이터와 연결하여 구체적으로 작성하세요."
+    )
+
+    def _make_stream(messages):
+        return client.chat.completions.create(
+            model=model, messages=messages,
+            max_tokens=500, temperature=0.3, stream=True,
+        )
+
+    try:
+        try:
+            stream = _make_stream([
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt},
+            ])
+        except Exception as sys_err:
+            if "Developer instruction is not enabled" in str(sys_err) or "system" in str(sys_err).lower():
+                stream = _make_stream([
+                    {"role": "user", "content": f"{system_msg}\n\n{prompt}"},
+                ])
+            else:
+                raise
+
+        raw = ""
+        for chunk in stream:
+            token = (chunk.choices[0].delta.content or "") if chunk.choices else ""
+            if token:
+                raw += token
+                yield token  # 토큰 스트리밍
+
+        # 파싱 결과를 마지막에 dict로 yield
+        parsed = {"raw": raw}
+        for line in raw.splitlines():
+            line = line.strip()
+            for key in ["비즈니스 모델", "최근 모멘텀", "추천 이유", "리스크"]:
+                if line.startswith(f"[{key}]:"):
+                    parsed[key] = line[len(f"[{key}]:"):].strip()
+                    break
+                elif line.startswith(f"{key}:"):
+                    parsed[key] = line[len(f"{key}:"):].strip()
+                    break
+        yield parsed  # 마지막에 파싱 dict
+
+    except Exception as e:
+        yield {"error": str(e), "raw": ""}
+
+
+
     """단일 종목 LLM 요약. 수급 데이터(row)를 프롬프트에 주입해 추천이유/리스크 설명 포함."""
     row = row or {}
 
