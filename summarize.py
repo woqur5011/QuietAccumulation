@@ -313,7 +313,7 @@ def summarize_stock_stream(client, model: str, name: str, ticker: str, row: dict
 
 def screen_stocks(df: pd.DataFrame) -> tuple:
     """
-    지표 기반으로 매수 추천 / 비추천 분류.
+    지표 기반으로 매수 추천 / 비추천 분류 (보수적 기준).
     Returns: (rec_df, skip_df, skip_reasons: {종목명: [이유, ...]})
     """
     skip_reasons: dict[str, list[str]] = {}
@@ -322,35 +322,45 @@ def screen_stocks(df: pd.DataFrame) -> tuple:
         name = str(row.get("종목명", ""))
         reasons = []
 
-        # 1) 재무등급 D
+        # 1) 재무등급 C 이하 (D, C 모두 비추천)
         grade = str(row.get("재무등급", "") or "").strip().upper()
-        if grade == "D":
-            reasons.append("재무등급 D (재무위험)")
+        if grade in ("D", "C"):
+            reasons.append(f"재무등급 {grade} (재무 취약)")
 
         # 2) 영업 적자
         op_margin = pd.to_numeric(row.get("영업이익률(%)"), errors="coerce")
         if not pd.isna(op_margin) and op_margin < 0:
             reasons.append(f"영업적자 ({op_margin:.1f}%)")
 
-        # 3) 부채비율 과다 (보수적 기준 200%)
+        # 3) 부채비율 과다 (150% 초과)
         debt = pd.to_numeric(row.get("부채비율"), errors="coerce")
-        if not pd.isna(debt) and debt > 200:
+        if not pd.isna(debt) and debt > 150:
             reasons.append(f"부채비율 과다 ({debt:.0f}%)")
 
-        # 4) PBR 고평가 (5배 초과)
+        # 4) PBR 고평가 (3배 초과)
         pbr = pd.to_numeric(row.get("라이브PBR"), errors="coerce")
-        if not pd.isna(pbr) and pbr > 5:
+        if not pd.isna(pbr) and pbr > 3:
             reasons.append(f"PBR 고평가 ({pbr:.1f}배)")
 
-        # 5) 수급 지속성 부족 (외인·기관 둘 다 3일 미만)
+        # 5) 수급 지속성 부족 (외인·기관 둘 다 5일 미만)
         f_days = pd.to_numeric(row.get("외인연속매수일", 0), errors="coerce")
         i_days = pd.to_numeric(row.get("기관연속매수일", 0), errors="coerce")
-        f_ok = (not pd.isna(f_days)) and f_days >= 3
-        i_ok = (not pd.isna(i_days)) and i_days >= 3
+        f_ok = (not pd.isna(f_days)) and f_days >= 5
+        i_ok = (not pd.isna(i_days)) and i_days >= 5
         if not f_ok and not i_ok:
             fv = f"{f_days:.0f}" if not pd.isna(f_days) else "?"
             iv = f"{i_days:.0f}" if not pd.isna(i_days) else "?"
-            reasons.append(f"수급 지속성 부족 (외인 {fv}일, 기관 {iv}일 — 최소 한 쪽 3일 이상 필요)")
+            reasons.append(f"수급 지속성 부족 (외인 {fv}일, 기관 {iv}일 — 최소 한 쪽 5일 이상 필요)")
+
+        # 6) 합산점수 하위 (50점 미만)
+        score = pd.to_numeric(row.get("합산점수"), errors="coerce")
+        if not pd.isna(score) and score < 50:
+            reasons.append(f"합산점수 낮음 ({score:.0f}점)")
+
+        # 7) 52주 신고가 과열 (52주 위치 95% 초과 — 추격매수 위험)
+        pos52 = pd.to_numeric(row.get("52주위치(%)"), errors="coerce")
+        if not pd.isna(pos52) and pos52 > 95:
+            reasons.append(f"52주 신고가 과열 ({pos52:.0f}%)")
 
         if reasons:
             skip_reasons[name] = reasons

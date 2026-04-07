@@ -715,8 +715,8 @@ def main():
                                    for n, i in not_recommended.items()]
                         st.dataframe(pd.DataFrame(rows_nr), use_container_width=True, hide_index=True)
 
-        # 요약 카드 표시
-        if summary_data and summary_data.get("summaries"):
+        # 요약 카드 표시 (스트리밍 생성 직후는 이미 위에서 렌더링됐으므로 스킵)
+        if not force_regen and summary_data and summary_data.get("summaries"):
             summaries      = summary_data["summaries"]
             not_recom      = summary_data.get("not_recommended", {})
             rec_items      = list(summaries.items())
