@@ -186,15 +186,29 @@ def summarize_stock(client, model: str, name: str, ticker: str, row: dict | None
 
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=500,
-                temperature=0.3,
-            )
+            # Gemma 등 system role 미지원 모델 대응: system 내용을 user 메시지 앞에 삽입
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=500,
+                    temperature=0.3,
+                )
+            except Exception as sys_err:
+                if "Developer instruction is not enabled" in str(sys_err) or "system" in str(sys_err).lower():
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "user", "content": f"{system_msg}\n\n{prompt}"},
+                        ],
+                        max_tokens=500,
+                        temperature=0.3,
+                    )
+                else:
+                    raise
             raw = response.choices[0].message.content.strip()
             break
         except Exception as e:
