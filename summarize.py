@@ -308,66 +308,141 @@ def summarize_stock_stream(client, model: str, name: str, ticker: str, row: dict
 
 
 # ─────────────────────────────────────────────
-# 스크리닝: 매수 추천 / 비추천 분류
+# 스크리닝: Z-score + LLM 2단계
 # ─────────────────────────────────────────────
 
-def screen_stocks(df: pd.DataFrame) -> tuple:
+SCREEN_PROMPT = """너는 퀀트 투자 전문가야. 아래는 오늘의 수급 상위 종목들과 각 종목의 종합점수(Z-score 기반)야.
+
+{table}
+
+위 종목들을 비교해서, **지금 당장 주목할 만한 종목만** 골라줘.
+- 선택 기준: 수급 모멘텀이 강하고, 외인+기관이 동시에 또는 지속적으로 매집 중인 종목
+- 3~7개 선택 (너무 많으면 안 됨, 진짜 강한 것만)
+
+반드시 아래 JSON 형식으로만 답해. 다른 설명 없이 JSON만:
+{{
+  "recommended": ["종목명1", "종목명2", ...],
+  "not_recommended": {{
+    "종목명A": "비추천 이유 한 줄",
+    "종목명B": "비추천 이유 한 줄"
+  }}
+}}"""
+
+
+def _zscore(series: pd.Series) -> pd.Series:
+    """NaN 안전 Z-score 표준화."""
+    s = pd.to_numeric(series, errors="coerce").fillna(0)
+    std = s.std()
+    if std == 0:
+        return pd.Series([0.0] * len(s), index=s.index)
+    return (s - s.mean()) / std
+
+
+def compute_z_score(df: pd.DataFrame) -> pd.Series:
     """
-    지표 기반으로 매수 추천 / 비추천 분류 (보수적 기준).
-    Returns: (rec_df, skip_df, skip_reasons: {종목명: [이유, ...]})
+    가중 Z-score 종합점수 계산.
+    매수일 40% (외인 20% + 기관 20%)
+    매수억 40% (외인 20% + 기관 20%)
+    합산점수 20%
     """
+    z_f_days = _zscore(df.get("외인연속매수일", pd.Series(dtype=float))) * 0.20
+    z_i_days = _zscore(df.get("기관연속매수일", pd.Series(dtype=float))) * 0.20
+    z_f_bil  = _zscore(df.get("외인매수(억)",   pd.Series(dtype=float))) * 0.20
+    z_i_bil  = _zscore(df.get("기관매수(억)",   pd.Series(dtype=float))) * 0.20
+    z_score  = _zscore(df.get("합산점수",        pd.Series(dtype=float))) * 0.20
+    return z_f_days + z_i_days + z_f_bil + z_i_bil + z_score
+
+
+def screen_stocks_llm(df: pd.DataFrame, client, model: str) -> tuple:
+    """
+    1단계: Z-score로 종합점수 계산 → 상위 절반 후보 선정
+    2단계: LLM이 후보군 비교해서 최종 추천/비추천 결정
+    Returns: (rec_df, skip_df, skip_reasons)
+    """
+    import json as _json
+
+    df = df.copy()
+    df["_z"] = compute_z_score(df)
+    df = df.sort_values("_z", ascending=False).reset_index(drop=True)
+
+    # 상위 절반만 LLM 후보로 (최소 5개, 최대 10개)
+    n_candidates = max(5, min(10, len(df) // 2))
+    candidates = df.head(n_candidates).copy()
+    rest = df.iloc[n_candidates:].copy()
+
+    # 테이블 생성
+    def _fmt(v, fmt="{:.1f}"):
+        n = pd.to_numeric(v, errors="coerce")
+        return fmt.format(n) if not pd.isna(n) else "-"
+
+    rows_txt = []
+    for i, row in candidates.iterrows():
+        rows_txt.append(
+            f"{row.get('종목명','')} | Z점수: {row['_z']:.2f} | "
+            f"외인연속: {_fmt(row.get('외인연속매수일'))}일 | 기관연속: {_fmt(row.get('기관연속매수일'))}일 | "
+            f"외인매수: {_fmt(row.get('외인매수(억)'), '{:+.0f}')}억 | 기관매수: {_fmt(row.get('기관매수(억)'), '{:+.0f}')}억 | "
+            f"합산점수: {_fmt(row.get('합산점수'))}"
+        )
+    table_str = "\n".join(rows_txt)
+
+    prompt = SCREEN_PROMPT.format(table=table_str)
+
+    # LLM 호출 (system role fallback 포함)
+    def _call(messages):
+        return client.chat.completions.create(
+            model=model, messages=messages, max_tokens=800, temperature=0.1,
+        )
+
+    try:
+        try:
+            resp = _call([{"role": "system", "content": "JSON만 출력하는 퀀트 분석기."}, {"role": "user", "content": prompt}])
+        except Exception as e:
+            if "Developer instruction is not enabled" in str(e) or "system" in str(e).lower():
+                resp = _call([{"role": "user", "content": prompt}])
+            else:
+                raise
+        raw = resp.choices[0].message.content.strip()
+        # JSON 블록 추출
+        if "```" in raw:
+            raw = raw.split("```")[1].lstrip("json").strip()
+        result = _json.loads(raw)
+    except Exception as e:
+        print(f"[WARN] LLM 스크리닝 실패, Z-score 상위만 사용: {e}")
+        # fallback: Z-score 상위 절반 전체 추천
+        rec_names = set(candidates["종목명"].tolist())
+        skip_reasons = {str(r.get("종목명","")): ["Z-score 하위"] for _, r in rest.iterrows()}
+        rec_df  = df[df["종목명"].isin(rec_names)].drop(columns=["_z"]).reset_index(drop=True)
+        skip_df = df[~df["종목명"].isin(rec_names)].drop(columns=["_z"]).reset_index(drop=True)
+        return rec_df, skip_df, skip_reasons
+
+    rec_names = set(result.get("recommended", []))
+    llm_not_rec = result.get("not_recommended", {})
+
+    # Z-score 하위 종목은 LLM 판단 없이 비추천
     skip_reasons: dict[str, list[str]] = {}
+    for _, row in rest.iterrows():
+        skip_reasons[str(row.get("종목명",""))] = [f"Z-score 하위 (종합점수 {row['_z']:.2f})"]
+    # LLM 비추천 추가
+    for name, reason in llm_not_rec.items():
+        skip_reasons[name] = [f"LLM 판단: {reason}"]
 
-    for _, row in df.iterrows():
-        name = str(row.get("종목명", ""))
-        reasons = []
+    all_skip = set(skip_reasons.keys())
+    df_clean = df.drop(columns=["_z"])
+    rec_df  = df_clean[df_clean["종목명"].isin(rec_names)].reset_index(drop=True)
+    skip_df = df_clean[df_clean["종목명"].isin(all_skip)].reset_index(drop=True)
+    return rec_df, skip_df, skip_reasons
 
-        # 1) 재무등급 C 이하 (D, C 모두 비추천)
-        grade = str(row.get("재무등급", "") or "").strip().upper()
-        if grade in ("D", "C"):
-            reasons.append(f"재무등급 {grade} (재무 취약)")
 
-        # 2) 영업 적자
-        op_margin = pd.to_numeric(row.get("영업이익률(%)"), errors="coerce")
-        if not pd.isna(op_margin) and op_margin < 0:
-            reasons.append(f"영업적자 ({op_margin:.1f}%)")
-
-        # 3) 부채비율 과다 (150% 초과)
-        debt = pd.to_numeric(row.get("부채비율"), errors="coerce")
-        if not pd.isna(debt) and debt > 150:
-            reasons.append(f"부채비율 과다 ({debt:.0f}%)")
-
-        # 4) PBR 고평가 (3배 초과)
-        pbr = pd.to_numeric(row.get("라이브PBR"), errors="coerce")
-        if not pd.isna(pbr) and pbr > 3:
-            reasons.append(f"PBR 고평가 ({pbr:.1f}배)")
-
-        # 5) 수급 지속성 부족 (외인·기관 둘 다 5일 미만)
-        f_days = pd.to_numeric(row.get("외인연속매수일", 0), errors="coerce")
-        i_days = pd.to_numeric(row.get("기관연속매수일", 0), errors="coerce")
-        f_ok = (not pd.isna(f_days)) and f_days >= 5
-        i_ok = (not pd.isna(i_days)) and i_days >= 5
-        if not f_ok and not i_ok:
-            fv = f"{f_days:.0f}" if not pd.isna(f_days) else "?"
-            iv = f"{i_days:.0f}" if not pd.isna(i_days) else "?"
-            reasons.append(f"수급 지속성 부족 (외인 {fv}일, 기관 {iv}일 — 최소 한 쪽 5일 이상 필요)")
-
-        # 6) 합산점수 하위 (50점 미만)
-        score = pd.to_numeric(row.get("합산점수"), errors="coerce")
-        if not pd.isna(score) and score < 50:
-            reasons.append(f"합산점수 낮음 ({score:.0f}점)")
-
-        # 7) 52주 신고가 과열 (52주 위치 95% 초과 — 추격매수 위험)
-        pos52 = pd.to_numeric(row.get("52주위치(%)"), errors="coerce")
-        if not pd.isna(pos52) and pos52 > 95:
-            reasons.append(f"52주 신고가 과열 ({pos52:.0f}%)")
-
-        if reasons:
-            skip_reasons[name] = reasons
-
-    skip_names = set(skip_reasons.keys())
-    rec_df  = df[~df["종목명"].isin(skip_names)].copy().reset_index(drop=True)
-    skip_df = df[df["종목명"].isin(skip_names)].copy().reset_index(drop=True)
+def screen_stocks(df: pd.DataFrame) -> tuple:
+    """Z-score만으로 상위 절반 추천 (LLM 없이 호출 시 fallback)."""
+    df = df.copy()
+    df["_z"] = compute_z_score(df)
+    df = df.sort_values("_z", ascending=False).reset_index(drop=True)
+    n = max(5, len(df) // 2)
+    rec_df  = df.head(n).drop(columns=["_z"]).reset_index(drop=True)
+    skip_df = df.iloc[n:].drop(columns=["_z"]).reset_index(drop=True)
+    skip_reasons = {str(r.get("종목명","")): [f"Z-score 하위 ({r['_z']:.2f})"]
+                    for _, r in df.iloc[n:].iterrows()}
     return rec_df, skip_df, skip_reasons
 
 
@@ -411,8 +486,8 @@ def generate_summary(date_str: str | None = None, force: bool = False,
     print(f"[INFO] {date_str} top20 AI 요약 시작 (모델: {model}, URL: {base_url})")
     df = load_top20(date_str, tickers=tickers)
 
-    # 스크리닝: 매수 추천 / 비추천 분류
-    rec_df, skip_df, skip_reasons = screen_stocks(df)
+    # 스크리닝: Z-score + LLM 2단계
+    rec_df, skip_df, skip_reasons = screen_stocks_llm(df, client, model)
     print(f"[INFO] 추천: {len(rec_df)}개 / 비추천: {len(skip_df)}개")
     for name, reasons in skip_reasons.items():
         print(f"  ✗ {name}: {', '.join(reasons)}")

@@ -625,7 +625,7 @@ def main():
                 st.caption("⚠️ 요약 파일 없음 — '요약 (재)생성' 버튼을 눌러 생성하세요.")
 
         if force_regen:
-            from summarize import summarize_stock_stream, generate_summary, screen_stocks, load_top20, _load_llm_config
+            from summarize import summarize_stock_stream, screen_stocks_llm, load_top20, _load_llm_config
             import os as _os
 
             api_key, base_url, model_name = _load_llm_config()
@@ -643,7 +643,7 @@ def main():
                     tickers_list = df_top["티커"].astype(str).str.zfill(6).tolist()
                     try:
                         df_for_sum = load_top20(_sel_date or "latest", tickers=tickers_list)
-                        rec_df, skip_df, skip_reasons = screen_stocks(df_for_sum)
+                        rec_df, skip_df, skip_reasons = screen_stocks_llm(df_for_sum, client, model_name)
                     except Exception as e:
                         st.error(f"데이터 로드 실패: {e}")
                         rec_df, skip_df, skip_reasons = pd.DataFrame(), pd.DataFrame(), {}
