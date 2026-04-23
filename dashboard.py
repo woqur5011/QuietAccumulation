@@ -211,15 +211,39 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     # 3) 수급합 점수 (외인 + 기관 순매수 합계)
     df['수급합점수'] = pct_score(f_bil + i_bil)
 
-    # 4) 조용한매집점수
-    #   강도 : (외인연속 + 기관연속) / 30  (cap 1.0)
-    #   가산 : 둘 다 >=3일이면 x1.0, 하나만이면 x0.6, 없으면 x0.0
+    # 4) 조용한매집점수 (수급강도 60% + 거래량신호 25% + 주가안정 15%)
+    v5v20 = pd.to_numeric(
+        df['V5/V20'] if 'V5/V20' in df.columns else pd.Series(np.nan, index=df.index),
+        errors='coerce'
+    ).fillna(100)
+    p5p20 = pd.to_numeric(
+        df['P5/P20'] if 'P5/P20' in df.columns else pd.Series(np.nan, index=df.index),
+        errors='coerce'
+    ).fillna(100)
+
+    # ① 수급강도 (max 6.0): 외인/기관 연속매수 강도 × 자격 가산점
     buy_strength = ((f + inst) / 30).clip(0, 1)
     qualify = np.where(
         (f >= 3) & (inst >= 3), 1.0,
         np.where((f >= 3) | (inst >= 3), 0.6, 0.0)
     )
-    raw_quiet   = pd.Series(buy_strength * qualify, index=df.index)
+    supply_score = pd.Series(buy_strength * qualify * 6.0, index=df.index)
+
+    # ② 거래량신호 (max 2.5): V5/V20 100→200 선형 증가, 200 이상 cap
+    vol_score = pd.Series(
+        np.clip((v5v20.values - 100) / 100 * 2.5, 0, 2.5), index=df.index
+    )
+
+    # ③ 주가안정 (max 1.5): P5/P20 97~105 구간 최고점, 범위 밖 감점
+    _p = p5p20.values
+    price_score = pd.Series(np.where(
+        _p < 93,   0.0,
+        np.where(_p < 97,  (_p - 93) / 4.0 * 1.5,
+        np.where(_p <= 105, 1.5,
+        np.where(_p <= 112, (112 - _p) / 7.0 * 1.5, 0.0)))
+    ), index=df.index)
+
+    raw_quiet = supply_score + vol_score + price_score  # max 10.0
     df['조용한매집점수'] = pct_score(raw_quiet)
 
     # 5) 엔벨점수 (이평배열 + 엔벨상태 + 골든크로스 + 엔벨타점 → 백분위)
@@ -307,10 +331,10 @@ SCORE_COL_CONFIG = {
         "조용한매집점수",
         format="%.1f",
         help=(
-            "📌 조용한 장기 매집 지표 (0-10점, 연속 변수)\n"
-            "① 연속수급강도 (60%): (외인연속+기관연속)/20 × 가산점(x1.0/x0.6/x0.0)\n"
-            "② 주가안정 (20%): P5/P20이 이상적으로 95-108 구간에서 최고점\n"
-            "③ 거래량신호 (20%): V5/V20이 100-180 구간(조용한 매집 거래량)"
+            "📌 조용한 장기 매집 지표 (0-10점, 백분위)\n"
+            "① 수급강도 (60%): (외인+기관 연속매수)/30 × 자격(둘다≥3→×1.0, 하나→×0.6)\n"
+            "② 거래량신호 (25%): V5/V20 100→200 선형 증가 (가격 안 오르는데 볼륨↑)\n"
+            "③ 주가안정 (15%): P5/P20 97~105 구간 최고점 (과열 없이 조용히 오름)"
         ),
     ),
     "엔벨점수": st.column_config.NumberColumn(
