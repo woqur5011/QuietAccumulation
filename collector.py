@@ -644,6 +644,10 @@ def fetch_dart_treasury(ticker: str) -> dict:
 def fetch_ohlcv(ticker: str) -> dict:
     close = high_52w = low_52w = w52_pos = None
     v5v20 = p5p20 = None
+    ma_align_v     = "-"
+    env_state_v    = "중립"
+    golden_cross_v = False
+    env_signal_v   = False
     try:
         end_dt   = trade_date(0)
         start_dt = trade_date(W52_LOOKBACK * 2)
@@ -664,16 +668,70 @@ def fetch_ohlcv(ticker: str) -> dict:
             ma5  = float(vol.iloc[-5:].mean())
             ma20 = float(vol.iloc[-20:].mean())
             v5v20 = round(ma5 / ma20 * 100, 1) if ma20 > 0 else None
-        # P5/P20: 종가 MA5/MA20 * 100
+        # P5/P20 + Envelope: 종가 이동평균 (MA5 / MA20 / MA120) 기반 지표
         price = ohlcv["종가"]
+        pma5 = pma20 = pma120 = None
+        if len(price) >= 5:
+            pma5 = float(price.iloc[-5:].mean())
         if len(price) >= 20:
-            pma5  = float(price.iloc[-5:].mean())
             pma20 = float(price.iloc[-20:].mean())
-            p5p20 = round(pma5 / pma20 * 100, 1) if pma20 > 0 else None
+            p5p20 = round(pma5 / pma20 * 100, 1) if (pma5 is not None and pma20 > 0) else None
+            env_upper = pma20 * 1.09
+            env_lower = pma20 * 0.91
+            if close is not None:
+                if close > env_upper:
+                    env_state_v = "상단돌파"
+                elif close < env_lower:
+                    env_state_v = "하단이탈"
+        if len(price) >= 120:
+            pma120 = float(price.iloc[-120:].mean())
+
+        # 이평배열 (MA5 / MA20 / MA120 위치 관계 — 4단계)
+        if pma5 is not None and pma20 is not None and pma120 is not None:
+            if pma5 > pma20 > pma120:
+                ma_align_v = "완전정배열"
+            elif pma5 > pma120 and pma20 <= pma120:
+                ma_align_v = "상향전환"
+            elif pma5 < pma120 and pma20 >= pma120:
+                ma_align_v = "하향전환"
+            elif pma5 < pma20 < pma120:
+                ma_align_v = "완전역배열"
+            else:
+                ma_align_v = "혼합"
+
+        # 골든크로스: MA5가 MA120을 상향 돌파 (최근 5거래일 내)
+        if len(price) >= 125:
+            ma5_roll   = price.rolling(5).mean()
+            ma120_roll = price.rolling(120).mean()
+            recent     = pd.concat([ma5_roll, ma120_roll], axis=1).dropna()
+            recent.columns = ["_m5", "_m120"]
+            recent     = recent.tail(6)
+            if len(recent) >= 2:
+                was_below      = recent["_m5"].shift(1) <= recent["_m120"].shift(1)
+                now_above      = recent["_m5"] > recent["_m120"]
+                golden_cross_v = bool((was_below & now_above).iloc[1:].any())
+
+        # 엔벨 타점: 골든크로스 + 상단돌파, 또는 완전정배열 + 상단 재돌파
+        if golden_cross_v and env_state_v == "상단돌파":
+            env_signal_v = True
+        elif ma_align_v == "완전정배열" and env_state_v == "상단돌파" and len(price) >= 50:
+            ma20_roll  = price.rolling(20).mean()
+            look_back  = min(len(price) - 1, 30)
+            prev_ma20  = ma20_roll.iloc[-look_back:-1]
+            prev_close = price.iloc[-look_back:-1]
+            valid_idx  = prev_ma20.dropna().index
+            if len(valid_idx) > 0:
+                env_signal_v = bool(
+                    (prev_close.loc[valid_idx] > prev_ma20.loc[valid_idx] * 1.09).any()
+                )
     except Exception as e:
         log.debug(f"[{ticker}] OHLCV 실패: {e}")
-    return {"close": close, "high_52w": high_52w, "low_52w": low_52w,
-            "w52_pos": w52_pos, "v5v20": v5v20, "p5p20": p5p20}
+    return {
+        "close": close, "high_52w": high_52w, "low_52w": low_52w,
+        "w52_pos": w52_pos, "v5v20": v5v20, "p5p20": p5p20,
+        "이평배열": ma_align_v, "엔벨상태": env_state_v,
+        "골든크로스": golden_cross_v, "엔벨타점": env_signal_v,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -716,6 +774,10 @@ def fetch_ticker_data(ticker: str, name: str) -> dict:
         "매출증가율(%)":    dart.get("revenue_growth"),
         "V5/V20":           ov.get("v5v20"),
         "P5/P20":           ov.get("p5p20"),
+        "이평배열":         ov.get("이평배열", "-"),
+        "엔벨상태":         ov.get("엔벨상태", "중립"),
+        "골든크로스":       ov.get("골든크로스", False),
+        "엔벨타점":         ov.get("엔벨타점", False),
         "52주위치(%)":      ov.get("w52_pos"),
         "재무등급":         fin_grade,
         "수집시각":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -814,6 +876,7 @@ COL_ORDER = [
     "종가", "라이브PBR", "부채비율", "유보율", "영업이익률(%)",
     "매출증가율(%)",
     "V5/V20", "P5/P20",
+    "이평배열", "엔벨상태", "골든크로스", "엔벨타점",
     "52주위치(%)", "재무등급", "수집시각",
 ]
 

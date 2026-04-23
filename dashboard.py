@@ -182,7 +182,7 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
     if len(df) == 0:
-        for c in ['외인연속점수', '기관연속점수', '수급합점수', '조용한매집점수', '합산점수']:
+        for c in ['외인연속점수', '기관연속점수', '수급합점수', '조용한매집점수', '엔벨점수', '합산점수']:
             df[c] = 0.0
         return df
 
@@ -222,12 +222,32 @@ def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     raw_quiet   = pd.Series(buy_strength * qualify, index=df.index)
     df['조용한매집점수'] = pct_score(raw_quiet)
 
-    # 합산점수 (max 3 + min 2 + 수급합 3 + 조용한 2 = max 100)
+    # 5) 엔벨점수 (이평배열 + 엔벨상태 + 골든크로스 + 엔벨타점 → 백분위)
+    _align_map = {"완전정배열": 4.0, "상향전환": 2.0, "하향전환": 1.0, "완전역배열": 0.0, "혼합": 1.0}
+    _env_map   = {"상단돌파": 2.0, "중립": 1.0, "하단이탈": 0.0}
+
+    _align_raw = (df["이평배열"] if "이평배열" in df.columns
+                  else pd.Series("-", index=df.index)).map(_align_map).fillna(1.0)
+    _env_raw   = (df["엔벨상태"] if "엔벨상태" in df.columns
+                  else pd.Series("중립", index=df.index)).map(_env_map).fillna(1.0)
+
+    def _bool_col(col: str) -> pd.Series:
+        s = df[col] if col in df.columns else pd.Series(False, index=df.index)
+        return s.map({True: 1.0, False: 0.0, "True": 1.0, "False": 0.0}).fillna(0.0)
+
+    _gc_bonus  = _bool_col("골든크로스") * 2.0
+    _sig_bonus = _bool_col("엔벨타점")   * 1.0
+
+    _raw_env = (_align_raw + _env_raw + _gc_bonus + _sig_bonus).clip(0, 10)
+    df['엔벨점수'] = pct_score(_raw_env)
+
+    # 합산점수 (max 2.55 + min 1.70 + 수급합 2.55 + 조용한 1.70 + 엔벨 1.50 = max 100)
     df['합산점수'] = (
-        df[['외인연속점수', '기관연속점수']].max(axis=1) * 3 +
-        df[['외인연속점수', '기관연속점수']].min(axis=1) * 2 +
-        df['수급합점수']     * 3 +
-        df['조용한매집점수'] * 2
+        df[['외인연속점수', '기관연속점수']].max(axis=1) * 2.55 +
+        df[['외인연속점수', '기관연속점수']].min(axis=1) * 1.70 +
+        df['수급합점수']     * 2.55 +
+        df['조용한매집점수'] * 1.70 +
+        df['엔벨점수']       * 1.50
     ).round(2)
 
     return df
@@ -248,15 +268,14 @@ def score_color(val) -> str:
 # ─────────────────────────────────────────────
 SCORE_COL_CONFIG = {
     "전체순위": st.column_config.NumberColumn("순위", width="small", help="전체 종목 합산점수 기준 순위", pinned=True),
-    "종목명": st.column_config.TextColumn("종목명", width="medium", pinned=True),
-    "시장": st.column_config.TextColumn("시장", width="small", help="KOSPI / KOSDAQ"),
-    "네이버": st.column_config.LinkColumn(
-        "네이버",
-        display_text="📈",
-        help="네이버 금융에서 종목 상세 보기",
-        width="small",
+    "종목명": st.column_config.LinkColumn(
+        "종목명",
+        display_text=r"#(.+)$",
+        width="medium",
         pinned=True,
+        help="클릭 시 네이버 금융으로 이동",
     ),
+    "시장": st.column_config.TextColumn("시장", width="small", help="KOSPI / KOSDAQ"),
     "외인연속점수": st.column_config.NumberColumn(
         "외인연속점수",
         format="%.1f",
@@ -294,13 +313,22 @@ SCORE_COL_CONFIG = {
             "③ 거래량신호 (20%): V5/V20이 100-180 구간(조용한 매집 거래량)"
         ),
     ),
+    "엔벨점수": st.column_config.NumberColumn(
+        "엔벨점수",
+        format="%.1f",
+        help=(
+            "📌 엔벨로프 기술적 모멘텀 점수 (0-10점)\n"
+            "이평배열(MA5/20/120) + 엔벨상태(MA20±9%) + 골든크로스/타점 보너스\n"
+            "완전정배열=4pt, 상단돌파=2pt, 골든크로스=+2pt, 타점=+1pt → 백분위 환산"
+        ),
+    ),
     "합산점수": st.column_config.NumberColumn(
         "합산점수",
         format="%.1f",
         help=(
             "📌 종합 점수 (최대 100점)\n"
-            "= max(외인,기관) × 3 + min(외인,기관) × 2\n"
-            "+ 수급합점수 × 3 + 조용한매집 × 2"
+            "= max(외인,기관) × 2.55 + min(외인,기관) × 1.70\n"
+            "+ 수급합점수 × 2.55 + 조용한매집 × 1.70 + 엔벨점수 × 1.50"
         ),
     ),
 }
@@ -333,10 +361,21 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
     # 종목명 검색
     search = st.sidebar.text_input("종목명 검색", "", key="sb_search")
 
+    # 이평배열 / 엔벨 타점 필터 (해당 컬럼이 있을 때만)
+    if "이평배열" in df.columns:
+        st.sidebar.markdown("### 이평배열 / 엔벨")
+        align_opts = ["전체", "완전정배열", "상향전환", "하향전환", "완전역배열", "혼합"]
+        sel_align = st.sidebar.selectbox("이평배열", align_opts, index=0, key="sb_align")
+        if sel_align != "전체":
+            fdf = fdf[fdf["이평배열"] == sel_align]
+        only_signal = st.sidebar.checkbox("엔벨 타점만", value=False, key="sb_env_signal")
+        if only_signal and "엔벨타점" in fdf.columns:
+            fdf = fdf[fdf["엔벨타점"].isin([True, "True"])]
+
     # 정렬 기준
     sort_col = st.sidebar.selectbox(
         "정렬 기준",
-        ["합산점수", "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수",
+        ["합산점수", "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "엔벨점수",
          "외인연속매수일", "기관연속매수일", "52주위치(%)", "라이브PBR",
          "외인매수(억)", "기관매수(억)", "V5/V20", "P5/P20", "부채비율"],
         index=0, key="sb_sort_col",
@@ -394,12 +433,21 @@ def main():
 
     # ── 날짜 선택 (사이드바) ──
     available = get_available_dates()
+    # latest.csv 항상 맨 위에 추가
+    if (DATA_DIR / "latest.csv").exists():
+        available = ["latest"] + available
     if not available:
-        # latest.csv fallback
-        p = DATA_DIR / "latest.csv"
-        available = ["latest"] if p.exists() else []
+        available = ["(없음)"]
 
     def _date_label(d: str) -> str:
+        if d == "latest":
+            p = DATA_DIR / "latest.csv"
+            try:
+                n = sum(1 for _ in open(p, encoding="utf-8-sig")) - 1
+            except Exception:
+                n = 0
+            suffix = f" [전체 {n:,}종목]" if n > 20 else f" [워치리스트 {n}종목]"
+            return f"latest (최신){suffix}"
         if len(d) == 8 and d.isdigit():
             p = DATA_DIR / f"{d}.csv"
             try:
@@ -470,12 +518,13 @@ def main():
 
     DISPLAY_COLS = [
         "전체순위", "종목명", "시장",
-        "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "합산점수",
+        "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "엔벨점수", "합산점수",
         "외인연속매수일", "기관연속매수일",
         "외인매수(억)", "기관매수(억)",
         "종가", "라이브PBR", "부채비율", "유보율", "영업이익률(%)",
         "매출증가율(%)",
         "V5/V20", "P5/P20",
+        "이평배열", "엔벨상태", "엔벨타점",
         "52주위치(%)", "재무등급",
     ]
 
@@ -483,11 +532,13 @@ def main():
         show_cols = [c for c in DISPLAY_COLS if c in source_df.columns]
         disp = source_df[show_cols].copy()
 
-        # 종목명 바로 다음에 네이버 링크 컨럼 삽입
+        # 종목명을 네이버 링크로 변환 (URL#종목명 → display_text 정규식으로 종목명만 표시)
         if "티커" in source_df.columns and "종목명" in disp.columns:
-            urls = "https://finance.naver.com/item/main.nhn?code=" + source_df["티커"].astype(str).str.zfill(6)
-            ins_pos = disp.columns.get_loc("종목명") + 1
-            disp.insert(ins_pos, "네이버", urls.values)
+            disp["종목명"] = (
+                "https://finance.naver.com/item/main.nhn?code="
+                + source_df["티커"].astype(str).str.zfill(6)
+                + "#" + source_df["종목명"].astype(str)
+            ).values
 
         # 외인/기관 매수 표시: "+43.28억(16일)" 형식
         for _bil, _day in [("외인매수(억)", "외인연속매수일"), ("기관매수(억)", "기관연속매수일")]:
@@ -507,9 +558,31 @@ def main():
                 styles["52주위치(%)"] = s["52주위치(%)"].apply(w52_color)
             if "재무등급" in s.columns:
                 styles["재무등급"] = s["재무등급"].apply(grade_color)
-            for col in ["외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "합산점수"]:
+            for col in ["외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "엔벨점수", "합산점수"]:
                 if col in s.columns:
                     styles[col] = s[col].apply(score_color)
+            if "이평배열" in s.columns:
+                def _align_color(v):
+                    v = str(v)
+                    if v == "완전정배열": return "background-color:#15803d; color:#bbf7d0; font-weight:700;"
+                    if v == "상향전환":   return "background-color:#1e3a5f; color:#93c5fd;"
+                    if v == "하향전환":   return "background-color:#78350f; color:#fde68a;"
+                    if v == "완전역배열": return "background-color:#7f1d1d; color:#fca5a5;"
+                    return ""
+                styles["이평배열"] = s["이평배열"].apply(_align_color)
+            if "엔벨상태" in s.columns:
+                def _env_color(v):
+                    v = str(v)
+                    if v == "상단돌파": return "background-color:#fca5a5; color:#7f1d1d; font-weight:700;"
+                    if v == "하단이탈": return "background-color:#bfdbfe; color:#1e3a5f; font-weight:700;"
+                    return ""
+                styles["엔벨상태"] = s["엔벨상태"].apply(_env_color)
+            if "엔벨타점" in s.columns:
+                def _signal_color(v):
+                    if v in (True, "True", "✓"):
+                        return "background-color:#ca8a04; color:#fefce8; font-weight:700;"
+                    return ""
+                styles["엔벨타점"] = s["엔벨타점"].apply(_signal_color)
             for col in ["외인연속매수일", "기관연속매수일"]:
                 if col in s.columns:
                     def _buy_color(v, _col=col):
@@ -522,7 +595,7 @@ def main():
             return styles
 
         score_fmt = {c: (lambda v: f"{v:.1f}" if pd.notna(v) else "-")
-                     for c in ["외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "합산점수"]}
+                     for c in ["외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "엔벨점수", "합산점수"]}
         return (
             disp.style
             .apply(style_table, axis=None)
@@ -537,6 +610,7 @@ def main():
                 "매출증가율(%)": lambda v: f"{v:+.1f}%" if pd.notna(v) else "-",
                 "V5/V20": lambda v: f"{v:.1f}" if pd.notna(v) else "-",
                 "P5/P20": lambda v: f"{v:.1f}" if pd.notna(v) else "-",
+                "엔벨타점": lambda v: "✓" if v in (True, "True", 1, "1") else "-",
                 "52주위치(%)": lambda v: f"{v:.1f}" if pd.notna(v) else "-",
                 **score_fmt,
             }, na_rep="-")
@@ -788,7 +862,7 @@ def main():
         # 전체 정렬 기준
         sort_all = st.selectbox(
             "정렬 기준",
-            ["합산점수", "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수",
+            ["합산점수", "외인연속점수", "기관연속점수", "수급합점수", "조용한매집점수", "엔벨점수",
              "외인연속매수일", "기관연속매수일", "52주위치(%)", "라이브PBR", "부채비율"],
             index=0, key="sort_all",
         )
