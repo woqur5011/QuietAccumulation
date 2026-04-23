@@ -1,0 +1,83 @@
+name: 데이터 수집
+
+on:
+  # 수동 실행 (watchlist 또는 full 선택)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '수집 모드'
+        required: true
+        default: 'watchlist'
+        type: choice
+        options:
+          - watchlist
+          - full
+
+  # 자동 스케줄 (한국시간 기준 — UTC+9)
+  schedule:
+    # 장전 watchlist: 평일 08:50 KST = 23:50 UTC (전일)
+    - cron: '50 23 * * 0-4'
+    # 장중 1h watchlist: 평일 09:00~15:00 KST = 00:00~06:00 UTC
+    - cron: '0 0-6 * * 1-5'
+    # 장시작 full: 평일 09:30 KST = 00:30 UTC
+    - cron: '30 0 * * 1-5'
+    # 장마감 full: 평일 16:30 KST = 07:30 UTC
+    - cron: '30 7 * * 1-5'
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 의존성 설치
+        run: pip install -r QuietAccumulation/requirements.txt
+
+      - name: 수집 모드 결정
+        id: mode
+        run: |
+          # workflow_dispatch 이면 입력값, 스케줄이면 cron 시각으로 자동 판별
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%-H)
+            MIN=$(date -u +%-M)
+            # 00:30 UTC = 장시작 full, 07:30 UTC = 장마감 full
+            if { [ "$HOUR" -eq 0 ] && [ "$MIN" -eq 30 ]; } || \
+               { [ "$HOUR" -eq 7 ] && [ "$MIN" -eq 30 ]; }; then
+              echo "mode=full" >> $GITHUB_OUTPUT
+            else
+              echo "mode=watchlist" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: 데이터 수집
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+        run: |
+          cd QuietAccumulation
+          echo "수집 모드: ${{ steps.mode.outputs.mode }}"
+          python collector.py --${{ steps.mode.outputs.mode }} 2>&1 | tail -50
+
+      - name: latest.csv 커밋 & 푸시
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add QuietAccumulation/data/latest.csv
+          # latest_summary.json 있으면 함께
+          [ -f QuietAccumulation/data/latest_summary.json ] && \
+            git add QuietAccumulation/data/latest_summary.json || true
+          # 변경사항 있을 때만 커밋
+          git diff --cached --quiet || \
+            git commit -m "data: $(date +'%Y-%m-%d %H:%M') [${{ steps.mode.outputs.mode }}] auto-collect"
+          git push

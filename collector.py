@@ -995,8 +995,15 @@ def _git_push_latest():
 
 if __name__ == "__main__":
     import sys
-    mode = "full" if "--full" in sys.argv else "watchlist"
+    if "--full" in sys.argv:
+        mode = "full"
+    elif "--watchlist" in sys.argv:
+        mode = "watchlist"
+    else:
+        mode = "watchlist"
     collect_snapshot(mode=mode)
     if mode == "full":
         _auto_summarize()
-        _git_push_latest()
+        # GitHub Actions 환경에서는 워크플로가 push 담당하므로 로컬만 실행
+        if "GITHUB_ACTIONS" not in os.environ:
+            _git_push_latest()
