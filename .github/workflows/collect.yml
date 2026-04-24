@@ -27,6 +27,8 @@ on:
 jobs:
   collect:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -79,4 +81,4 @@ jobs:
           # 변경사항 있을 때만 커밋
           git diff --cached --quiet || \
             git commit -m "data: $(date +'%Y-%m-%d %H:%M') [${{ steps.mode.outputs.mode }}] auto-collect"
-          git push
+          git push origin HEAD:main
