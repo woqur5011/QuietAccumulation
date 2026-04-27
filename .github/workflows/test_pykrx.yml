@@ -1,0 +1,54 @@
+name: pykrx 투자자데이터 테스트
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: pykrx 설치
+        run: pip install pykrx pandas
+
+      - name: 투자자 데이터 테스트 (LS에코에너지 229640)
+        run: |
+          python - <<'EOF'
+          from pykrx import stock as pykrx_stock
+          import requests
+
+          # 1) pykrx get_market_trading_value_by_date
+          print("=== pykrx 투자자 순매매 ===")
+          df = pykrx_stock.get_market_trading_value_by_date("20260415", "20260425", "229640")
+          print("shape:", df.shape)
+          print(df)
+
+          # 2) 직접 HTTP 요청으로 KRX 응답 확인
+          print("\n=== KRX 직접 HTTP 테스트 ===")
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": "Mozilla/5.0",
+              "Referer": "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
+          })
+          session.get("https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd")
+          resp = session.post(
+              "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
+              data={
+                  "bld": "dbms/MDC/STAT/standard/MDCSTAT02302",
+                  "strtDd": "20260422",
+                  "endDd": "20260425",
+                  "isuCd": "KR7229640008",
+                  "inqTpCd": 2,
+                  "trdVolVal": 2,
+                  "askBid": 3,
+              }
+          )
+          print("HTTP status:", resp.status_code)
+          print("Response:", resp.text[:300])
+          EOF
