@@ -163,12 +163,13 @@ def verify_ticker_name(ticker: str, expected_name: str) -> bool:
 # ─────────────────────────────────────────────
 def fetch_investor_pykrx(ticker: str) -> dict | None:
     """
-    KRX 공식 투자자 순매매 데이터 (pykrx).
+    KRX 공식 투자자 순매매 + 기본 재무(PER/PBR/BPS) 데이터 (pykrx).
     KRX_ID / KRX_PW 환경변수 없으면 None 반환 → Naver fallback.
     반환:
       foreign_consec, inst_consec          : 연속 순매수일
       foreign_sell, inst_sell              : 중간매도기간
       last_foreign_shares, last_inst_shares: 연속매수 누적 순매매 금액(억원)
+      per, pbr, bps                        : KRX 기준 재무 수치
     """
     krx_id = os.environ.get("KRX_ID", "").strip()
     krx_pw = os.environ.get("KRX_PW", "").strip()
@@ -211,6 +212,17 @@ def fetch_investor_pykrx(ticker: str) -> dict | None:
             result["last_inst_shares"] = round(float(inst.iloc[:n_i].sum()) / 1e8, 2)
         else:
             result["last_inst_shares"] = round(float(inst.iloc[0]) / 1e8, 2) if not inst.empty else None
+
+        # PER / PBR / BPS (가장 최근 거래일 기준)
+        try:
+            fd = pykrx_stock.get_market_fundamental_by_date(start_dt, end_dt, ticker)
+            if not fd.empty:
+                last = fd.iloc[-1]
+                result["per"] = float(last["PER"]) if last["PER"] > 0 else None
+                result["pbr"] = float(last["PBR"]) if last["PBR"] > 0 else None
+                result["bps"] = float(last["BPS"]) if last["BPS"] > 0 else None
+        except Exception:
+            pass
 
         return result
     except Exception as e:
@@ -798,21 +810,22 @@ def fetch_ohlcv(ticker: str) -> dict:
 # 단일 종목 수집
 # ─────────────────────────────────────────────
 def fetch_ticker_data(ticker: str, name: str) -> dict:
-    # 투자자 데이터: pykrx(KRX 공식) 우선, 없으면 Naver fallback
+    # pykrx(KRX 공식) 우선 — 투자자 + PER/PBR/BPS 포함
     pykrx_inv = fetch_investor_pykrx(ticker)
-    nv = fetch_naver_data(ticker)
     if pykrx_inv is not None:
-        nv.update(pykrx_inv)   # 투자자 필드만 KRX 값으로 덮어쓰기
+        # KRX 데이터로 충분 — Naver는 fin_grade fallback용으로만 최소 호출
+        nv = {"foreign_consec": 0, "inst_consec": 0,
+              "foreign_sell": 0, "inst_sell": 0,
+              "last_foreign_shares": None, "last_inst_shares": None,
+              "per": None, "pbr": None, "bps": None, "fin_grade": "-"}
+        nv.update(pykrx_inv)
+    else:
+        nv = fetch_naver_data(ticker)
     time.sleep(REQUEST_DELAY_SEC)
     ov   = fetch_ohlcv(ticker)
     dart = fetch_dart_financials(ticker) if DART_API_KEY else {"debt_ratio": None, "retention": None, "revenue_growth": None, "op_margin": None}
 
     close = ov.get("close")
-
-    def to_bil(shares):
-        if shares is None or close is None:
-            return None
-        return round(shares * close / 1e8, 2)
 
     # 라이브 PBR: 현재 종가 / BPS
     bps = nv.get("bps")
@@ -826,8 +839,8 @@ def fetch_ticker_data(ticker: str, name: str) -> dict:
         "티커":             ticker,
         "외인연속매수일":    nv["foreign_consec"],
         "기관연속매수일":    nv["inst_consec"],
-        "외인매수(억)":     to_bil(nv["last_foreign_shares"]),
-        "기관매수(억)":     to_bil(nv["last_inst_shares"]),
+        "외인매수(억)":     nv["last_foreign_shares"],
+        "기관매수(억)":     nv["last_inst_shares"],
         "중간매도기간(외)":  nv["foreign_sell"],
         "중간매도기간(기)":  nv["inst_sell"],
         "종가":             close,
