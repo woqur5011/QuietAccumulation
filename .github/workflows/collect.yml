@@ -77,10 +77,11 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/latest.csv
-          # latest_summary.json 있으면 함께
-          [ -f data/latest_summary.json ] && \
-            git add data/latest_summary.json || true
-          # 변경사항 있을 때만 커밋
+          [ -f data/latest_summary.json ] && git add data/latest_summary.json || true
           git diff --cached --quiet || \
             git commit -m "data: $(date +'%Y-%m-%d %H:%M') [${{ steps.mode.outputs.mode }}] auto-collect"
-          git push origin HEAD:main
+          # 충돌 방지: push 전 최신 main rebase 후 재시도
+          for i in 1 2 3; do
+            git pull --rebase origin main && \
+            git push origin HEAD:main && break || sleep 10
+          done
