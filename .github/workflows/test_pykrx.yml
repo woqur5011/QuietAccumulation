@@ -18,6 +18,9 @@ jobs:
         run: pip install pykrx pandas
 
       - name: 투자자 데이터 테스트 (LS에코에너지 229640)
+        env:
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
         run: |
           python - <<'EOF'
           from pykrx import stock as pykrx_stock
