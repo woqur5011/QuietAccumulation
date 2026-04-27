@@ -159,6 +159,66 @@ def verify_ticker_name(ticker: str, expected_name: str) -> bool:
 
 
 # ─────────────────────────────────────────────
+# pykrx 투자자 순매매 (KRX 공식, KRX_ID/KRX_PW 필요)
+# ─────────────────────────────────────────────
+def fetch_investor_pykrx(ticker: str) -> dict | None:
+    """
+    KRX 공식 투자자 순매매 데이터 (pykrx).
+    KRX_ID / KRX_PW 환경변수 없으면 None 반환 → Naver fallback.
+    반환:
+      foreign_consec, inst_consec          : 연속 순매수일
+      foreign_sell, inst_sell              : 중간매도기간
+      last_foreign_shares, last_inst_shares: 연속매수 누적 순매매 금액(억원)
+    """
+    krx_id = os.environ.get("KRX_ID", "").strip()
+    krx_pw = os.environ.get("KRX_PW", "").strip()
+    if not krx_id or not krx_pw:
+        return None
+
+    empty = {
+        "foreign_consec": 0, "inst_consec": 0,
+        "foreign_sell": 0,   "inst_sell": 0,
+        "last_foreign_shares": None, "last_inst_shares": None,
+    }
+    try:
+        end_dt   = trade_date(0)
+        start_dt = trade_date(60)   # 약 60 거래일 (3개월)
+        df = pykrx_stock.get_market_trading_value_by_date(start_dt, end_dt, ticker)
+        if df.empty or "외국인합계" not in df.columns:
+            return empty
+
+        # 최신순 정렬
+        df = df.sort_index(ascending=False)
+
+        foreign = df["외국인합계"]
+        inst    = df["기관합계"]
+
+        result = dict(empty)
+        result["foreign_consec"] = consecutive_buy(foreign)
+        result["foreign_sell"]   = consecutive_sell(foreign)
+        result["inst_consec"]    = consecutive_buy(inst)
+        result["inst_sell"]      = consecutive_sell(inst)
+
+        # 누적 순매매 금액(억원)
+        n_f = result["foreign_consec"]
+        if n_f > 0:
+            result["last_foreign_shares"] = round(float(foreign.iloc[:n_f].sum()) / 1e8, 2)
+        else:
+            result["last_foreign_shares"] = round(float(foreign.iloc[0]) / 1e8, 2) if not foreign.empty else None
+
+        n_i = result["inst_consec"]
+        if n_i > 0:
+            result["last_inst_shares"] = round(float(inst.iloc[:n_i].sum()) / 1e8, 2)
+        else:
+            result["last_inst_shares"] = round(float(inst.iloc[0]) / 1e8, 2) if not inst.empty else None
+
+        return result
+    except Exception as e:
+        log.debug(f"[{ticker}] pykrx 투자자 실패: {e}")
+        return empty
+
+
+# ─────────────────────────────────────────────
 # 네이버 단일 요청으로 투자자 데이터 + 재무등급 통합 수집
 # ─────────────────────────────────────────────
 def fetch_naver_data(ticker: str) -> dict:
@@ -738,7 +798,11 @@ def fetch_ohlcv(ticker: str) -> dict:
 # 단일 종목 수집
 # ─────────────────────────────────────────────
 def fetch_ticker_data(ticker: str, name: str) -> dict:
-    nv   = fetch_naver_data(ticker)
+    # 투자자 데이터: pykrx(KRX 공식) 우선, 없으면 Naver fallback
+    pykrx_inv = fetch_investor_pykrx(ticker)
+    nv = fetch_naver_data(ticker)
+    if pykrx_inv is not None:
+        nv.update(pykrx_inv)   # 투자자 필드만 KRX 값으로 덮어쓰기
     time.sleep(REQUEST_DELAY_SEC)
     ov   = fetch_ohlcv(ticker)
     dart = fetch_dart_financials(ticker) if DART_API_KEY else {"debt_ratio": None, "retention": None, "revenue_growth": None, "op_margin": None}

@@ -66,6 +66,8 @@ jobs:
       - name: 데이터 수집
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
         run: |
           echo "수집 모드: ${{ steps.mode.outputs.mode }}"
           python collector.py --${{ steps.mode.outputs.mode }} 2>&1 | tail -50
