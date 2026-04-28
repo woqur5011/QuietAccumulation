@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '30 0 * * 1-5'   # 장시작 09:30 KST
-    - cron: '30 7 * * 1-5'   # 장마감 16:30 KST
+    - cron: '30 6 * * 1-5'   # 장마감 15:30 KST
 
 jobs:
   collect:
