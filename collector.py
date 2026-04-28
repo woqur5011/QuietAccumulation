@@ -27,6 +27,8 @@ import os
 import re
 import time
 from datetime import date, timedelta, datetime
+import zoneinfo
+KST = zoneinfo.ZoneInfo("Asia/Seoul")
 from io import StringIO
 from pathlib import Path
 
@@ -213,16 +215,9 @@ def fetch_investor_pykrx(ticker: str) -> dict | None:
         else:
             result["last_inst_shares"] = round(float(inst.iloc[0]) / 1e8, 2) if not inst.empty else None
 
-        # PER / PBR / BPS (가장 최근 거래일 기준)
-        try:
-            fd = pykrx_stock.get_market_fundamental_by_date(start_dt, end_dt, ticker)
-            if not fd.empty:
-                last = fd.iloc[-1]
-                result["per"] = float(last["PER"]) if last["PER"] > 0 else None
-                result["pbr"] = float(last["PBR"]) if last["PBR"] > 0 else None
-                result["bps"] = float(last["BPS"]) if last["BPS"] > 0 else None
-        except Exception:
-            pass
+        # PER / PBR / BPS — 사전조회 캐시에서 조회 (개별 API 호출 없음)
+        fund = _FUNDAMENTAL_CACHE.get(ticker, {})
+        result.update(fund)
 
         return result
     except Exception as e:
@@ -857,7 +852,7 @@ def fetch_ticker_data(ticker: str, name: str) -> dict:
         "엔벨타점":         ov.get("엔벨타점", False),
         "52주위치(%)":      ov.get("w52_pos"),
         "재무등급":         fin_grade,
-        "수집시각":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "수집시각":         datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
@@ -958,15 +953,48 @@ COL_ORDER = [
 ]
 
 
+def _prefetch_fundamentals() -> dict:
+    """전종목 PER/PBR/BPS를 한 번에 조회 (KRX 공식, 단일 API 호출)"""
+    krx_id = os.environ.get("KRX_ID", "").strip()
+    krx_pw = os.environ.get("KRX_PW", "").strip()
+    if not krx_id or not krx_pw:
+        return {}
+    try:
+        date_str = trade_date(0)
+        fd = pykrx_stock.get_market_fundamental_by_ticker(date_str)
+        if fd.empty:
+            fd = pykrx_stock.get_market_fundamental_by_ticker(trade_date(1))
+        result = {}
+        for ticker, row in fd.iterrows():
+            result[str(ticker)] = {
+                "per": float(row["PER"]) if row["PER"] > 0 else None,
+                "pbr": float(row["PBR"]) if row["PBR"] > 0 else None,
+                "bps": float(row["BPS"]) if row["BPS"] > 0 else None,
+            }
+        log.info(f"PER/PBR/BPS 사전조회 완료: {len(result)}종목")
+        return result
+    except Exception as e:
+        log.warning(f"PER/PBR/BPS 사전조회 실패: {e}")
+        return {}
+
+
+# 전역 캐시 (collect_snapshot 1회 실행 내에서 공유)
+_FUNDAMENTAL_CACHE: dict = {}
+
+
 def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
     """
     mode = 'watchlist' : watchlist.json 만 수집 (기본, 빠름)
     mode = 'full'      : 코스피 + 코스닥 전체 (느림, 약 20-30분)
     """
+    global _FUNDAMENTAL_CACHE
     log.info(f"=== 스냅샷 수집 시작 [mode={mode}] ===")
 
     watchlist = get_all_tickers() if mode == "full" else load_watchlist()
     log.info(f"수집 대상: {len(watchlist)}개 종목")
+
+    # PER/PBR/BPS 전종목 사전조회 (API 1회로 종목별 개별호출 제거)
+    _FUNDAMENTAL_CACHE = _prefetch_fundamentals()
 
     target_csv = daily_csv_path()   # data/YYYYMMDD.csv
     rows: list[dict] = []
@@ -988,7 +1016,7 @@ def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
             log.warning(f"[{ticker}] 수집 오류: {e}")
             row = {
                 "종목명": name, "티커": ticker,
-                "수집시각": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "수집시각": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
             }
         row["No"] = i
         if market:
