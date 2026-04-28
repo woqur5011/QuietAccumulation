@@ -83,5 +83,6 @@ jobs:
           # 충돌 방지: push 전 최신 main rebase 후 재시도
           for i in 1 2 3; do
             git pull --rebase origin main && \
-            git push origin HEAD:main && break || sleep 10
+            git push origin HEAD:main && \
+            git push origin HEAD:master && break || sleep 10
           done
