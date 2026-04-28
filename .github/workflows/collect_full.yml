@@ -1,10 +1,10 @@
-name: 데이터 수집 (watchlist)
+name: 데이터 수집 (full)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '50 23 * * 0-4'   # 장전 08:50 KST
-    - cron: '0 1-6 * * 1-5'   # 장중 10:00~15:00 KST (1h 간격)
+    - cron: '30 0 * * 1-5'   # 장시작 09:30 KST
+    - cron: '30 7 * * 1-5'   # 장마감 16:30 KST
 
 jobs:
   collect:
@@ -24,12 +24,12 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: 데이터 수집 (watchlist)
+      - name: 데이터 수집 (full ~30분)
         env:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
-        run: python collector.py --watchlist 2>&1 | tail -30
+        run: python collector.py --full 2>&1 | tail -30
 
       - name: 커밋 & 푸시
         run: |
@@ -38,7 +38,7 @@ jobs:
           git add data/latest.csv
           [ -f data/latest_summary.json ] && git add data/latest_summary.json || true
           git diff --cached --quiet || \
-            git commit -m "data: $(date +'%Y-%m-%d %H:%M') [watchlist] auto-collect"
+            git commit -m "data: $(date +'%Y-%m-%d %H:%M') [full] auto-collect"
           for i in 1 2 3; do
             git pull --rebase origin main && \
             git push origin HEAD:main && \
