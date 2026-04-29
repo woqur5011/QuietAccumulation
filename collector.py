@@ -804,11 +804,10 @@ def fetch_ohlcv(ticker: str) -> dict:
 # ─────────────────────────────────────────────
 # 단일 종목 수집
 # ─────────────────────────────────────────────
-def fetch_ticker_data(ticker: str, name: str) -> dict:
-    # pykrx(KRX 공식) 우선 — 투자자 + PER/PBR/BPS 포함
-    pykrx_inv = fetch_investor_pykrx(ticker)
+def fetch_ticker_data(ticker: str, name: str, use_krx: bool = True) -> dict:
+    # watchlist: KRX 공식(정확), full: Naver(빠름)
+    pykrx_inv = fetch_investor_pykrx(ticker) if use_krx else None
     if pykrx_inv is not None:
-        # KRX 데이터로 충분 — Naver는 fin_grade fallback용으로만 최소 호출
         nv = {"foreign_consec": 0, "inst_consec": 0,
               "foreign_sell": 0, "inst_sell": 0,
               "last_foreign_shares": None, "last_inst_shares": None,
@@ -1011,7 +1010,7 @@ def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
             continue
 
         try:
-            row = fetch_ticker_data(ticker, name)
+            row = fetch_ticker_data(ticker, name, use_krx=(mode == "watchlist"))
         except Exception as e:
             log.warning(f"[{ticker}] 수집 오류: {e}")
             row = {
