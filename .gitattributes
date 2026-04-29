@@ -1,0 +1,2 @@
+# latest.csv는 merge 시 항상 remote(theirs) 버전 유지
+data/latest.csv merge=theirs
