@@ -1036,9 +1036,24 @@ def collect_snapshot(mode: str = "watchlist") -> pd.DataFrame:
         _save_df(df, latest_csv_path())
         log.info(f"저장 완료 → {target_csv}  ({len(df)}개 종목)")
     else:
-        # 워치리스트: latest.csv 만 저장 (YYYYMMDD.csv 풀스캔 덮어쓰기 방지)
-        _save_df(df, latest_csv_path())
-        log.info(f"저장 완료 → latest.csv  ({len(df)}개 종목, YYYYMMDD.csv 유지)")
+        # 워치리스트: 기존 latest.csv에서 해당 행만 업데이트 (전체 덮어쓰기 방지)
+        latest_path = latest_csv_path()
+        if latest_path.exists():
+            try:
+                existing = pd.read_csv(latest_path, encoding="utf-8-sig")
+                updated_tickers = df["티커"].tolist()
+                existing = existing[~existing["티커"].isin(updated_tickers)]
+                merged = pd.concat([existing, df], ignore_index=True)
+                merged = merged[[c for c in COL_ORDER if c in merged.columns]]
+                merged["No"] = range(1, len(merged) + 1)
+                _save_df(merged, latest_path)
+                log.info(f"저장 완료 → latest.csv  ({len(merged)}개 종목, watchlist {len(df)}행 업데이트)")
+            except Exception as e:
+                log.warning(f"기존 latest.csv 병합 실패({e}), 워치리스트만 저장")
+                _save_df(df, latest_path)
+        else:
+            _save_df(df, latest_path)
+            log.info(f"저장 완료 → latest.csv  ({len(df)}개 종목, YYYYMMDD.csv 유지)")
 
     # DART 재무 캐시 최종 flush
     _save_dart_fin_cache()
